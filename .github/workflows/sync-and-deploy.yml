@@ -1,0 +1,57 @@
+name: Auto Sync Fork and Deploy to Render
+
+on:
+  schedule:
+    # Esegue il controllo ogni ora (puoi modificare la sintassi cron)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Permette di avviare il processo anche manualmente tramite interfaccia GitHub
+
+permissions:
+  contents: write # Necessario per effettuare il push dei nuovi commit
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Aggiungi e fetch upstream
+        run: |
+          # SOSTITUISCI L'URL QUI SOTTO CON QUELLO DELLA REPOSITORY ORIGINALE
+          git remote add upstream https://github.com/realbestia1/EasyProxy.git
+          git fetch upstream
+
+      - name: Sincronizza e verifica aggiornamenti
+        id: sync
+        run: |
+          # Se la repository originale usa "master" invece di "main", cambia il nome qui sotto
+          git checkout main
+          LOCAL_HASH=$(git rev-parse HEAD)
+          
+          # Fonde le modifiche originali ignorando richieste di messaggi
+          git merge upstream/main --no-edit
+          NEW_HASH=$(git rev-parse HEAD)
+          
+          if [ "$LOCAL_HASH" != "$NEW_HASH" ]; then
+            echo "Aggiornamenti trovati nell'upstream! Push in corso..."
+            git push origin main
+            echo "updated=true" >> $GITHUB_OUTPUT
+          else
+            echo "Nessun nuovo aggiornamento trovato. Il fork è già allineato."
+            echo "updated=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger Render Deploy with Clear Cache
+        # Esegue questo step SOLO se sono stati scaricati e pushati nuovi aggiornamenti
+        if: steps.sync.outputs.updated == 'true'
+        run: |
+          # Aggiunge il parametro &clearCache=true all'URL del Webhook salvato nei secret
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}&clearCache=true"
