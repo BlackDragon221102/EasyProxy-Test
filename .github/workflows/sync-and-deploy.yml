@@ -3,7 +3,7 @@ name: Auto Sync Fork and Deploy to Render
 on:
   schedule:
     # Esegue il controllo ogni ora (puoi modificare la sintassi cron)
-    - cron: '33 11 * * *'
+    - cron: '27 10 * * *'
   workflow_dispatch: # Permette di avviare il processo anche manualmente tramite interfaccia GitHub
 
 permissions:
