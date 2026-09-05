@@ -641,6 +641,10 @@ class ManifestRewriter:
                         proxy_key_url += f"&proxy={urllib.parse.quote(selected_proxy, safe='')}"
                     if force_direct:
                         proxy_key_url += "&direct=1"
+                    if extractor_key:
+                        proxy_key_url += f"&extractor_key={urllib.parse.quote(extractor_key, safe='')}"
+                    if stream_key:
+                        proxy_key_url += f"&stream_key={urllib.parse.quote(stream_key, safe='')}"
 
                     new_line = line[:uri_start] + proxy_key_url + line[uri_end:]
                     rewritten_lines.append(new_line)

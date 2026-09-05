@@ -270,6 +270,15 @@ class HLSProxyDashMixin:
                 forced_proxy = None
                 _shared.BYPASS_PROXIES_CONTEXT.set(True)
             bypass_warp = request.query.get("warp", "").lower() == "off"
+            extractor_key = request.query.get("extractor_key")
+            if extractor_key:
+                ext_warp_off, ext_proxy_off = _shared.get_extractor_routing_overrides(extractor_key)
+                if ext_warp_off:
+                    bypass_warp = True
+                if ext_proxy_off:
+                    _shared.BYPASS_PROXIES_CONTEXT.set(True)
+            if bypass_warp and forced_proxy and _shared.is_warp_proxy_url(forced_proxy):
+                forced_proxy = None
 
             _GLOBAL_PROXIES = _shared.GLOBAL_PROXIES
             _ENABLE_WARP = _shared.ENABLE_WARP
