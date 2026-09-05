@@ -130,6 +130,25 @@ class HLSProxyCoreMixin:
                         logger.info("[NET] Closed idle flex session (idle %.0fs)", now - _session_atime)
                     self.flex_session = None
 
+                # 3b. Close retired extractors older than 60s
+                if hasattr(self, "_retired_extractors") and self._retired_extractors:
+                    atimes = getattr(self, "_retired_extractor_atimes", None)
+                    if atimes is None:
+                        atimes = self._retired_extractor_atimes = {}
+                    still_retired = []
+                    for ext in self._retired_extractors:
+                        t = atimes.setdefault(id(ext), now)
+                        if now - t > 60:
+                            if hasattr(ext, "close"):
+                                try:
+                                    await ext.close()
+                                except Exception:
+                                    pass
+                            atimes.pop(id(ext), None)
+                        else:
+                            still_retired.append(ext)
+                    self._retired_extractors = still_retired
+
                 # 4. Compact Windows heap to release freed pages
                 await self._compact_heap()
 
@@ -842,6 +861,20 @@ class HLSProxyCoreMixin:
                 return key
         return None
 
+    def _invalidate_extractors(self):
+        """Retire active extractors so in-flight requests can finish, while
+        new requests get fresh instances with updated routing/proxies."""
+        retired = getattr(self, "_retired_extractors", None)
+        if retired is None:
+            retired = self._retired_extractors = []
+        for extractor in list(self.extractors.values()):
+            retired.append(extractor)
+        self.extractors.clear()
+        if hasattr(self, "_extractor_atimes"):
+            self._extractor_atimes.clear()
+        if hasattr(self, "_extractor_stream_atimes"):
+            self._extractor_stream_atimes.clear()
+
     @staticmethod
     def _stream_key_for_url(url: str | None) -> str | None:
         if not url:
@@ -932,11 +965,22 @@ class HLSProxyCoreMixin:
                 if hasattr(self, "_proxy_session_atimes"):
                     self._proxy_session_atimes.clear()
 
-            for extractor in self.extractors.values():
+            for extractor in list(self.extractors.values()):
                 if hasattr(extractor, "close"):
                     await extractor.close()
             self.extractors.clear()
-            self._extractor_atimes.clear()
-            self._extractor_stream_atimes.clear()
+            if hasattr(self, "_extractor_atimes"):
+                self._extractor_atimes.clear()
+            if hasattr(self, "_extractor_stream_atimes"):
+                self._extractor_stream_atimes.clear()
+
+            retired = list(getattr(self, "_retired_extractors", ()))
+            for extractor in retired:
+                if hasattr(extractor, "close"):
+                    await extractor.close()
+            if hasattr(self, "_retired_extractors"):
+                self._retired_extractors.clear()
+            if hasattr(self, "_retired_extractor_atimes"):
+                self._retired_extractor_atimes.clear()
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
