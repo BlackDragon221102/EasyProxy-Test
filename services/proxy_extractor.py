@@ -142,6 +142,7 @@ class HLSProxyExtractorHandlerMixin:
                         "mediaset",
                         "wittytv",
                         "raiplay",
+                        "cinejoy",
                     ],
                     "examples": [
                         f"{get_public_base_url(request)}/extractor/video?d=https://vavoo.to/channel/123",
