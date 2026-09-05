@@ -860,6 +860,10 @@ class HLSProxyCoreMixin:
         for key, cached_extractor in self.extractors.items():
             if cached_extractor is extractor:
                 return key
+        if extractor is not None:
+            name = getattr(extractor, "extractor_name", None)
+            if name:
+                return name
         return None
 
     def _invalidate_extractors(self):
@@ -884,11 +888,17 @@ class HLSProxyCoreMixin:
 
     def _touch_extractor_activity(self, extractor_key: str | None = None, stream_key: str | None = None):
         now = time.time()
-        if extractor_key and extractor_key in self.extractors:
-            self._extractor_atimes[extractor_key] = now
-            if stream_key:
-                self._extractor_stream_atimes[(extractor_key, stream_key)] = now
-            return
+        if extractor_key:
+            normalized = extractor_key.replace("_direct", "").replace("_noproxy", "")
+            matched = False
+            for k in list(self.extractors.keys()):
+                if k == extractor_key or k.startswith(normalized):
+                    self._extractor_atimes[k] = now
+                    if stream_key:
+                        self._extractor_stream_atimes[(k, stream_key)] = now
+                    matched = True
+            if matched:
+                return
         for key in self.extractors:
             self._extractor_atimes[key] = now
             if stream_key:
