@@ -243,7 +243,7 @@ class SyncEngine:
 
     async def _download_ranged(self, url: str, headers: dict) -> bytes:
         """Fetch a media object in small ranges when the CDN throttles full GETs."""
-        chunk_size = 256 * 1024
+        chunk_size = 1024 * 1024
         base_headers = {
             key: value for key, value in (headers or {}).items()
             if str(key).lower() != "range"
