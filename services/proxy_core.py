@@ -737,7 +737,7 @@ class HLSProxyCoreMixin:
             return SharedSessionWrapper(session), proxy
 
         session = await self._get_session(prefer_default_family=prefer_default_family)
-        return session, None
+        return SharedSessionWrapper(session), None
 
     async def _invalidate_proxy_session(self, proxy_url: str | None) -> bool:
         """Drop one pooled proxy session so the next request gets a new connector."""

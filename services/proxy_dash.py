@@ -131,11 +131,11 @@ class HLSProxyDashMixin:
                                         decrypted = decrypt_segment(init_segment or b"", content, kid, key)
                                         return web.Response(body=decrypted, content_type=resp.content_type)
                                     except Exception as e:
-                                        logger.warning(f"DASH decryption failed for {path}: {e}. Falling back to direct proxy.")
+                                        logger.warning(f"DASH decryption failed for {path}: {e}")
                         except Exception as e:
                             logger.debug(f"DASH init re-fetch failed for {path}: {e}")
 
-                    return web.Response(body=content, content_type=resp.content_type)
+                    return web.Response(status=502, text="DASH decryption failed or initialization unavailable")
 
                 # No ClearKey: stream chunk-by-chunk without buffering
                 response = web.StreamResponse(status=resp.status, headers={
