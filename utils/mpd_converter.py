@@ -9,6 +9,28 @@ logger = logging.getLogger(__name__)
 
 class MPDToHLSConverter:
     """Converte manifest MPD (DASH) in playlist HLS (m3u8) on-the-fly."""
+    _timeline_sequences = {}
+
+    def _sequence_for_window(self, key, segments, first_timestamp):
+        """Keep overlapping DASH segments at the same HLS sequence on reload."""
+        previous = self._timeline_sequences.get(key, {})
+        base = None
+        for index, segment in enumerate(segments):
+            if segment['time'] in previous:
+                base = previous[segment['time']] - index
+                break
+        if base is None:
+            # Initial numbering is arbitrary; subsequent overlapping windows
+            # are numbered by segment identity, never by variable duration.
+            duration = self._nominal_segment_duration_units(segments)
+            base = int(segments[0]['time'] // duration)
+            if previous:
+                base = max(base, max(previous.values()) + 1)
+        mapping = {segment['time']: base + index for index, segment in enumerate(segments)}
+        self._timeline_sequences[key] = mapping
+        while len(self._timeline_sequences) > 512:
+            self._timeline_sequences.pop(next(iter(self._timeline_sequences)))
+        return mapping[first_timestamp]
     
     def __init__(self):
         self.ns = {
@@ -546,49 +568,15 @@ class MPDToHLSConverter:
                         # Calcola TARGETDURATION dal segmento più lungo
                         max_duration = max(seg['duration'] for seg in segments_to_use)
                         
-                        # MEDIA-SEQUENCE deve essere basato sul timestamp del primo segmento
-                        # per garantire che quando il manifest viene ricaricato, il player
-                        # sappia quali segmenti ha già scaricato e quali sono nuovi.
-                        # 
-                        # Per LIVE stream multi-key, calcoliamo la sequenza dal timestamp:
-                        # sequence = first_segment_timestamp / segment_duration (in timescale units)
-                        # Questo garantisce che video e audio abbiano lo stesso MEDIA-SEQUENCE
-                        # anche se hanno timestamp leggermente diversi, perché usiamo il floor.
+                        # Preserve segment identity across rolling timeline reloads.
                         if len(segments_to_use) > 0:
                             first_seg = segments_to_use[0]
-                            first_seg_time_sec = first_seg['time'] / timescale
-                            # DASH live manifests may reset startNumber to 1
-                            # on every rolling window.  Build a stable HLS
-                            # sequence from media time and the nominal segment
-                            # duration.  Do not use the first segment duration:
-                            # audio timelines legitimately alternate by a few
-                            # milliseconds and that made MEDIA-SEQUENCE jump.
-                            duration_units = self._nominal_segment_duration_units(
-                                all_segments
+                            media_sequence = self._sequence_for_window(
+                                (original_url.split('?')[0], rep_id, timescale, presentation_time_offset, media, initialization),
+                                all_segments,
+                                first_seg['time'],
                             )
-                            media_time = first_seg['time'] - presentation_time_offset
-                            media_sequence = int(round(media_time / duration_units))
 
-                            # A provider/CDN can briefly return an older rolling
-                            # window.  HLS clients treat a backwards sequence as
-                            # a playlist reset and may stop playback, so keep the
-                            # sequence monotonic for this live representation.
-                            sequence_key = f"{original_url.split('?')[0]}::{rep_id}"
-                            if not hasattr(self.__class__, '_last_sequences'):
-                                self.__class__._last_sequences = {}
-                            previous_sequence = self.__class__._last_sequences.get(
-                                sequence_key
-                            )
-                            if (
-                                previous_sequence is not None
-                                and media_sequence < previous_sequence
-                            ):
-                                media_sequence = previous_sequence
-                            self.__class__._last_sequences[sequence_key] = media_sequence
-                            while len(self.__class__._last_sequences) > 512:
-                                self.__class__._last_sequences.pop(
-                                    next(iter(self.__class__._last_sequences))
-                                )
                             
                             lines.append(f'#EXT-X-TARGETDURATION:{int(max_duration) + 1}')
                             lines.append(f'#EXT-X-MEDIA-SEQUENCE:{media_sequence}')
