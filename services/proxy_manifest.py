@@ -914,16 +914,4 @@ class HLSProxyManifestHandlerMixin:
             BYPASS_PROXIES_CONTEXT.reset(proxy_bypass_token)
             SELECTED_PROXY_CONTEXT.reset(proxy_token)
             STRICT_PROXY_CONTEXT.reset(strict_proxy_token)
-            # 🚫 Cache disabilitata: chiudi sempre l'estrattore dopo l'uso.
-            if extractor_key is None and extractor is not None:
-                extractor_key = self._extractor_key_for_instance(extractor)
-            if extractor_key and extractor_key in self.extractors:
-                self.extractors.pop(extractor_key, None)
-                self._extractor_atimes.pop(extractor_key, None)
-                for _sr in [r for r in self._extractor_stream_atimes if r[0] == extractor_key]:
-                    self._extractor_stream_atimes.pop(_sr, None)
-            if extractor and hasattr(extractor, "close"):
-                try:
-                    await extractor.close()
-                except Exception:
-                    pass
+            # Shared extractor lifecycle belongs to the registry owner.

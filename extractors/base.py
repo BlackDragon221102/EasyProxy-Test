@@ -143,7 +143,11 @@ class BaseExtractor:
         raise ExtractorError(f"Request failed for {url}")
 
     async def close(self):
-        for session in self._route_sessions.values():
+        sessions = set(self._route_sessions.values())
+        if self.session is not None:
+            sessions.add(self.session)
+        for session in sessions:
             if not session.closed:
                 await session.close()
         self._route_sessions.clear()
+        self.session = None

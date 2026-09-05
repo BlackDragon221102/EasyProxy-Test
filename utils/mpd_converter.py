@@ -417,9 +417,17 @@ class MPDToHLSConverter:
                 start_number = int(segment_template.get('startNumber', '1'))
                 
                 # Risolvi URL base
-                base_url_tag = root.find('mpd:BaseURL', self.ns)
-                base_url = base_url_tag.text if base_url_tag is not None else os.path.dirname(original_url)
-                if not base_url.endswith('/'): base_url += '/'
+                parents = {child: parent for parent in root.iter() for child in parent}
+                ancestry = []
+                node = representation
+                while node is not None:
+                    ancestry.append(node)
+                    node = parents.get(node)
+                base_url = original_url
+                for node in reversed(ancestry):
+                    base = node.find('mpd:BaseURL', self.ns)
+                    if base is not None and base.text:
+                        base_url = urljoin(base_url, base.text.strip())
 
                 # --- INITIALIZATION SEGMENT (EXT-X-MAP) ---
                 encoded_init_url = ""

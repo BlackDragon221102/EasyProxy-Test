@@ -1,6 +1,6 @@
 import time
 import aiohttp
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote
 from config import STRICT_PROXY_CONTEXT
 import services.proxy_shared as _shared
 from services.proxy_shared import (
@@ -96,6 +96,14 @@ class HLSProxyDashMixin:
         if not base_url:
             return web.Response(text="Missing base_url in DASH state", status=400)
 
+        # A signed routing token must not authorize arbitrary hosts or traversal.
+        decoded_path = path or ""
+        for _ in range(3):
+            decoded_path = unquote(decoded_path)
+        if (not decoded_path or decoded_path.startswith(("/", "\\"))
+                or "\\" in decoded_path or urlparse(decoded_path).scheme
+                or any(part in (".", "..") for part in decoded_path.split("/"))):
+            return web.Response(status=400, text="Invalid DASH segment path")
         segment_url = urljoin(base_url, path)
         if getattr(request, "query_string", ""):
             segment_url += "?" + request.query_string
@@ -120,7 +128,9 @@ class HLSProxyDashMixin:
                 segment_url, bypass_warp=routing.get("bypass_warp", False),
                 forced_proxy=routing.get("proxy"),
             )
-            async with _session.get(segment_url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if not clearkey and getattr(request, "headers", {}).get("Range"):
+                headers["Range"] = request.headers["Range"]
+            async with _session.get(segment_url, headers=headers, allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status not in [200, 206]:
                     return web.Response(status=resp.status)
 
@@ -138,7 +148,7 @@ class HLSProxyDashMixin:
                     if init_url:
                         try:
                             _init_session = _session
-                            async with _init_session.get(init_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as init_resp:
+                            async with _init_session.get(init_url, headers=headers, allow_redirects=False, timeout=aiohttp.ClientTimeout(total=10)) as init_resp:
                                 if init_resp.status in [200, 206]:
                                     init_segment = await init_resp.read()
                                     try:
@@ -153,10 +163,14 @@ class HLSProxyDashMixin:
                     return web.Response(status=502, text="DASH decryption failed or initialization unavailable")
 
                 # No ClearKey: stream chunk-by-chunk without buffering
-                response = web.StreamResponse(status=resp.status, headers={
+                response_headers = {
                     "Content-Type": resp.content_type or "video/mp4",
                     "Access-Control-Allow-Origin": "*",
-                })
+                }
+                for name in ("Content-Range", "Accept-Ranges"):
+                    if name in resp.headers:
+                        response_headers[name] = resp.headers[name]
+                response = web.StreamResponse(status=resp.status, headers=response_headers)
                 await response.prepare(request)
                 async for chunk in resp.content.iter_any():
                     await response.write(chunk)
@@ -437,18 +451,6 @@ class HLSProxyDashMixin:
                                 logger.error(
                                     f"⚠️ Error during automatic cache invalidation: {cache_e}"
                                 )
-                            finally:
-                                _ek = self._extractor_key_for_instance(extractor) if extractor else None
-                                if _ek and _ek in self.extractors:
-                                    self.extractors.pop(_ek, None)
-                                    self._extractor_atimes.pop(_ek, None)
-                                    for _sr in [r for r in self._extractor_stream_atimes if r[0] == _ek]:
-                                        self._extractor_stream_atimes.pop(_sr, None)
-                                if extractor and hasattr(extractor, "close"):
-                                    try:
-                                        await extractor.close()
-                                    except Exception:
-                                        pass
                         # --- FINE LOGICA ---
                         return web.Response(
                             text=f"Key fetch failed: {resp.status}", status=resp.status

@@ -82,14 +82,29 @@ class ManifestRewriter:
         root = ET.fromstring(manifest_content)
         namespace = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
 
+        def relay(absolute, init_url=None):
+            parsed = urllib.parse.urlsplit(absolute)
+            directory, tail = parsed.path.rsplit("/", 1)
+            base_directory = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, directory + "/", "", ""))
+            if parsed.query:
+                tail += "?" + parsed.query
+            token = _encode_dash_state(base_directory, stream_headers, clearkey_param,
+                init_url=init_url, proxy=forced_proxy, bypass_warp=bypass_warp,
+                bypass_proxies=bypass_proxies)
+            return f"{proxy_base}/proxy/mpd/segment/{token}/{tail}"
+
         def walk(node, base, inherited=None):
             bases = node.findall(namespace + "BaseURL")
             if bases:
                 base = urljoin(base, bases[0].text or "")
             template = node.find(namespace + "SegmentTemplate")
+            if template is None:
+                template = node.find(namespace + "SegmentList")
+            if template is None:
+                template = node.find(namespace + "SegmentBase")
             effective = copy.deepcopy(inherited) if inherited is not None else None
             if template is not None:
-                if effective is None:
+                if effective is None or effective.tag != template.tag:
                     effective = copy.deepcopy(template)
                 else:
                     effective.attrib.update(template.attrib)
@@ -99,8 +114,34 @@ class ManifestRewriter:
                 if child.tag in (namespace + "Period", namespace + "AdaptationSet", namespace + "Representation"):
                     walk(child, base, effective)
             if node.tag == namespace + "Representation":
-                if effective is None or not effective.get("media"):
-                    raise ValueError("Native DASH requires a SegmentTemplate with media")
+                if effective is None:
+                    if clearkey_param:
+                        raise ValueError("ClearKey DASH requires initialization metadata")
+                    ET.SubElement(node, namespace + "BaseURL").text = relay(base)
+                elif effective.tag != namespace + "SegmentTemplate":
+                    init = effective.find(namespace + "Initialization")
+                    init_url = urljoin(base, init.get("sourceURL", "")) if init is not None else None
+                    if clearkey_param and (not init_url or effective.tag == namespace + "SegmentBase"
+                            or any("range" in k.lower() for element in effective.iter() for k in element.attrib)):
+                        raise ValueError("ClearKey byte-range DASH is unsupported; use full-segment HLS")
+                    if init is not None and init.get("sourceURL"):
+                        init.set("sourceURL", relay(init_url, init_url))
+                    for segment in effective.findall(namespace + "SegmentURL"):
+                        for attr in ("media", "index"):
+                            if segment.get(attr):
+                                segment.set(attr, relay(urljoin(base, segment.get(attr)), init_url))
+                    if effective.tag == namespace + "SegmentBase" or (init is not None and not init.get("sourceURL")):
+                        ET.SubElement(node, namespace + "BaseURL").text = relay(base, init_url)
+                    node.append(effective)
+                else:
+                    rewrite_template(node, effective, base)
+            for child in list(node):
+                if child in bases or child is template:
+                    node.remove(child)
+                elif clearkey_param and child.tag.rsplit("}", 1)[-1] in ("ContentProtection", "pssh"):
+                    node.remove(child)
+
+        def rewrite_template(node, effective, base):
                 def expand(value):
                     return value.replace("$RepresentationID$", node.get("id", "")).replace(
                         "$Bandwidth$", node.get("bandwidth", ""))
@@ -112,21 +153,8 @@ class ManifestRewriter:
                     if not effective.get(attr):
                         continue
                     absolute = urljoin(base, expand(effective.get(attr)))
-                    parsed = urllib.parse.urlsplit(absolute)
-                    directory, tail = parsed.path.rsplit("/", 1)
-                    base_directory = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, directory + "/", "", ""))
-                    if parsed.query:
-                        tail += "?" + parsed.query
-                    token = _encode_dash_state(base_directory, stream_headers, clearkey_param,
-                        init_url=init_url, proxy=forced_proxy, bypass_warp=bypass_warp,
-                        bypass_proxies=bypass_proxies)
-                    effective.set(attr, f"{proxy_base}/proxy/mpd/segment/{token}/{tail}")
+                    effective.set(attr, relay(absolute, init_url))
                 node.append(effective)
-            for child in list(node):
-                if child in bases or child is template:
-                    node.remove(child)
-                elif clearkey_param and child.tag.rsplit("}", 1)[-1] in ("ContentProtection", "pssh"):
-                    node.remove(child)
 
         walk(root, mpd_url)
         return ET.tostring(root, encoding="unicode")
