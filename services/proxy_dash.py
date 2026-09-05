@@ -18,21 +18,22 @@ from services.proxy_shared import (
 from services.secure_state import open_state, seal_state
 
 
-def _encode_dash_state(base_url: str, headers: dict, clearkey: str | None) -> str:
+def _encode_dash_state(base_url: str, headers: dict, clearkey: str | None, **routing) -> str:
     """Seal DASH routing state into a stateless, authenticated token."""
     return seal_state({
         "b": base_url,
         "h": headers,
         "k": clearkey,
+        "r": routing,
     }, "dash")
 
 
-def _decode_dash_state(token: str) -> tuple[str, dict, str | None] | None:
+def _decode_dash_state(token: str) -> tuple[str, dict, str | None, dict] | None:
     """Open a stateless, authenticated DASH routing token."""
     data = open_state(token, "dash")
     if not data:
         return None
-    return data.get("b", ""), data.get("h", {}), data.get("k")
+    return data.get("b", ""), data.get("h", {}), data.get("k"), data.get("r", {})
 
 
 def _safe_endpoint(url: str | None) -> str:
@@ -88,48 +89,62 @@ class HLSProxyDashMixin:
         if not decoded:
             return web.Response(text="Invalid or missing DASH state token", status=400)
 
-        base_url, headers, clearkey = decoded
+        base_url, headers, clearkey, routing = decoded
+        # Native relay fetches complete objects; a captured Range must not
+        # truncate the initialization data passed to the decrypter.
+        headers = {k: v for k, v in headers.items() if k.lower() != "range"}
         if not base_url:
             return web.Response(text="Missing base_url in DASH state", status=400)
 
         segment_url = urljoin(base_url, path)
+        if getattr(request, "query_string", ""):
+            segment_url += "?" + request.query_string
 
         # Parse clearkey into KID and KEY for decrypter
         kid, key = None, None
         if clearkey and ":" in clearkey:
-            parts = clearkey.split(":", 1)
-            kid, key = parts[0], parts[1]
+            pairs = [pair.split(":", 1) for pair in clearkey.split(",")]
+            if any(len(pair) != 2 for pair in pairs):
+                return web.Response(status=400, text="Invalid ClearKey pairs")
+            kid = ",".join(pair[0] for pair in pairs)
+            key = ",".join(pair[1] for pair in pairs)
 
         try:
             # Check if it's an initialization segment
-            is_init = "init" in path.lower() or "header" in path.lower()
+            is_init = segment_url == routing.get("init_url")
 
             # Fetch segment
-            _session = await self._get_session(url=segment_url)
+            if routing.get("bypass_proxies"):
+                _shared.BYPASS_PROXIES_CONTEXT.set(True)
+            _session, _ = await self._get_proxy_session(
+                segment_url, bypass_warp=routing.get("bypass_warp", False),
+                forced_proxy=routing.get("proxy"),
+            )
             async with _session.get(segment_url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status not in [200, 206]:
                     return web.Response(status=resp.status)
 
                 # ClearKey path: must read full segment for decryption
-                if not is_init and kid and key and decrypt_segment:
+                if kid and key:
+                    if not decrypt_segment:
+                        return web.Response(status=502, text="DASH decryption unavailable")
                     content = await resp.read()
-                    init_url = None
-                    dir_path = base_url.rstrip("/")
-                    for candidate in ("init.m4s", "init.mp4", "header.m4s", "header.mp4"):
-                        candidate_url = urljoin(base_url, candidate)
-                        if candidate_url.startswith(dir_path):
-                            init_url = candidate_url
-                            break
+                    if is_init:
+                        decrypted = decrypt_segment(content, b"", kid, key)
+                        return web.Response(body=decrypted, content_type=resp.content_type,
+                                            headers={"Access-Control-Allow-Origin": "*"})
+                    init_url = routing.get("init_url")
 
                     if init_url:
                         try:
-                            _init_session = await self._get_session(url=init_url)
+                            _init_session = _session
                             async with _init_session.get(init_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as init_resp:
                                 if init_resp.status in [200, 206]:
                                     init_segment = await init_resp.read()
                                     try:
-                                        decrypted = decrypt_segment(init_segment or b"", content, kid, key)
-                                        return web.Response(body=decrypted, content_type=resp.content_type)
+                                        decrypted = decrypt_segment(init_segment or b"", content, kid, key, skip_init=True)
+                                        return web.Response(body=decrypted, content_type=resp.content_type,
+                                                            headers={"Access-Control-Allow-Origin": "*"})
                                     except Exception as e:
                                         logger.warning(f"DASH decryption failed for {path}: {e}")
                         except Exception as e:

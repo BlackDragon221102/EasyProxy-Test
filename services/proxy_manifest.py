@@ -336,20 +336,15 @@ class HLSProxyManifestHandlerMixin:
                         if mpd_session and not mpd_session.closed:
                             await mpd_session.close()
 
-                # Encode DASH routing state into base64 token (stateless, no server-side session)
-                from services.proxy_dash import _encode_dash_state
-                session_id = _encode_dash_state(
-                    stream_url.rsplit('/', 1)[0] + '/',
-                    stream_headers,
-                    clearkey=parse_clearkey_params(request)
-                )
-
                 rewritten_mpd = ManifestRewriter.rewrite_mpd_native(
                     manifest_content=captured_manifest,
                     mpd_url=stream_url,
                     proxy_base=proxy_base,
                     stream_headers=stream_headers,
-                    session_id=session_id
+                    clearkey_param=parse_clearkey_params(request),
+                    bypass_warp=bypass_warp,
+                    bypass_proxies=bypass_proxies,
+                    forced_proxy=selected_proxy,
                 )
 
                 return web.Response(

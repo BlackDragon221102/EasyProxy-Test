@@ -12,6 +12,7 @@ import hashlib
 import socket
 import config as _config
 import config_store
+from services.session_lifetime import retire_session
 
 import services.proxy_shared as _shared
 from services.proxy_shared import (
@@ -114,18 +115,18 @@ class HLSProxyCoreMixin:
                         p_sess = self._proxy_sessions.pop(p, None)
                         self._proxy_session_atimes.pop(p, None)
                         if p_sess and not p_sess.closed:
-                            await p_sess.close()
+                            retire_session(self, p_sess)
                             logger.info(f"[NET] Closed idle proxy session: {p}")
 
                 # 3. Close shared session if idle >30s
                 _session_atime = getattr(self, "_session_atime", 0)
                 if _session_atime and now - _session_atime > 30:
                     if self.session and not self.session.closed:
-                        await self.session.close()
+                        retire_session(self, self.session)
                         logger.info("[NET] Closed idle shared session (idle %.0fs)", now - _session_atime)
                     self.session = None
                     if self.flex_session and not self.flex_session.closed:
-                        await self.flex_session.close()
+                        retire_session(self, self.flex_session)
                         logger.info("[NET] Closed idle flex session (idle %.0fs)", now - _session_atime)
                     self.flex_session = None
 
@@ -674,7 +675,7 @@ class HLSProxyCoreMixin:
                 p_sess = self._proxy_sessions.pop(p_url, None)
                 self._proxy_session_atimes.pop(p_url, None)
                 if p_sess and not p_sess.closed:
-                    await p_sess.close()
+                    retire_session(self, p_sess)
 
         proxy = forced_proxy or get_proxy_for_url(url, bypass_warp=bypass_warp)
         if not proxy and not _config.is_direct_connection_allowed(bypass_warp):
@@ -703,7 +704,7 @@ class HLSProxyCoreMixin:
                         oldest_sess = self._proxy_sessions.pop(oldest_proxy, None)
                         self._proxy_session_atimes.pop(oldest_proxy, None)
                         if oldest_sess and not oldest_sess.closed:
-                            await oldest_sess.close()
+                            retire_session(self, oldest_sess)
                             logger.info(f"[NET] Evicted oldest proxy session: {oldest_proxy}")
                 except Exception as e:
                     logger.warning(f"Failed to evict proxy session: {e}")
@@ -749,7 +750,7 @@ class HLSProxyCoreMixin:
         if not session:
             return False
         if not session.closed:
-            await session.close()
+            retire_session(self, session)
         logger.warning("[NET] Invalidated pooled proxy session: %s", proxy_url)
         return True
 
@@ -911,6 +912,11 @@ class HLSProxyCoreMixin:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
+        retired = list(getattr(self, "_retired_session_tasks", ()))
+        for task in retired:
+            task.cancel()
+        if retired:
+            await asyncio.gather(*retired, return_exceptions=True)
 
         try:
             if self.session and not self.session.closed:
