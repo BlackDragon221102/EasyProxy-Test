@@ -13,6 +13,7 @@ import socket
 import config as _config
 import config_store
 from services.session_lifetime import retire_session
+from services.socks_bridge import close_socks_bridges
 
 import services.proxy_shared as _shared
 from services.proxy_shared import (
@@ -982,5 +983,7 @@ class HLSProxyCoreMixin:
                 self._retired_extractors.clear()
             if hasattr(self, "_retired_extractor_atimes"):
                 self._retired_extractor_atimes.clear()
+
+            await close_socks_bridges()
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")

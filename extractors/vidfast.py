@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from config import get_preferred_proxy_for_url
 import config as _cfg
 from extractors.base import ExtractorError
+from services.socks_bridge import get_http_bridge_for_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +78,10 @@ class VidFastExtractor:
                 "VidFast: direct fallback disabled; no proxy route available"
             )
 
-        runner_proxy = (
-            proxy
-            if proxy and str(proxy).lower().startswith(("http://", "https://"))
-            else None
-        )
-        if proxy and runner_proxy is None:
+        runner_proxy = await get_http_bridge_for_proxy(proxy)
+        if proxy and not runner_proxy:
             raise ExtractorError(
-                f"VidFast: selected route is not supported by the Node resolver ({proxy}); refusing direct fallback"
+                f"VidFast: failed to create HTTP bridge for proxy ({proxy})"
             )
         self.last_used_proxy = runner_proxy
 
