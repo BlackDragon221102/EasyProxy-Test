@@ -746,6 +746,11 @@ class HLSProxyDualMixin:
                     bridge_media["manifest"] = ""
                     bridge_playlist, bridge_base = await self._manifest(bridge_media)
                     if _same_audio_timeline(audio_playlist, bridge_playlist):
+                        logger.info(
+                            "[DUAL] English-first sync trying eng='%s' requested=%s",
+                            (bridge_meta.get("name") or "English"),
+                            audio_lang,
+                        )
                         bridge = await self._prepare_dual_audio(
                             request,
                             bridge_media,
@@ -773,6 +778,18 @@ class HLSProxyDualMixin:
                                 audio_lang,
                                 bridge_meta.get("name") or "English",
                             )
+                        else:
+                            logger.info(
+                                "[DUAL] English-first sync rejected; falling back to requested %s track",
+                                audio_lang,
+                            )
+                    else:
+                        logger.warning("[DUAL] English bridge skipped: ita/eng timeline mismatch")
+                else:
+                    logger.info(
+                        "[DUAL] English bridge skipped: no separate eng rendition (extractor=%s)",
+                        str(audio.get("extractor_name") or ""),
+                    )
             except DualLinksError as exc:
                 logger.warning("[DUAL] English sync bridge unavailable: %s", exc.message)
         if bridge_attempted and not bridge_used:
