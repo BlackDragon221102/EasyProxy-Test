@@ -609,14 +609,35 @@ class HLSProxyDualMixin:
         name = str(result.get("audio_name") or result["audio_lang"]).replace('"', "'")
         audio_url = str(result["audio_url"]).replace('"', "%22")
         video_url = str(result["video_url"]).replace('"', "%22")
+        codecs = str(result.get("video_codecs") or "avc1.640028,mp4a.40.2").replace('"', "")
         return "\n".join([
             "#EXTM3U",
             "#EXT-X-VERSION:7",
             f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dual-audio",LANGUAGE="{language}",NAME="{name}",DEFAULT=YES,AUTOSELECT=YES,URI="{audio_url}"',
-            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{resolution},CODECS="avc1.640028,mp4a.40.2",AUDIO="dual-audio"',
+            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{resolution},CODECS="{codecs}",AUDIO="dual-audio"',
             video_url,
             "",
         ])
+
+    @staticmethod
+    def _video_codecs(text: str, base_url: str, video_url: str) -> str:
+        """CODECS reali della variante scelta (hls.js li usa per il SourceBuffer)."""
+        try:
+            variants, _ = _master_entries(text, base_url)
+            for item in variants:
+                if item.get("url") != video_url:
+                    continue
+                raw = str(item["attributes"].get("CODECS", ""))
+                video = next((
+                    part.strip() for part in raw.split(",")
+                    if part.strip().split(".")[0].lower() not in
+                    {"mp4a", "ac-3", "ac-4", "ec-3", "opus", "vorbis", "alac"}
+                ), "")
+                if video:
+                    return f"{video},mp4a.40.2"
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return "avc1.640028,mp4a.40.2"
 
     async def _build_dual_result(self, request, body: dict) -> dict:
         requested_audio_lang = str(
@@ -830,6 +851,7 @@ class HLSProxyDualMixin:
             "audio_url": self._audio_url_with_sync(str(prepared.get("url") or ""), synced),
             "audio_hid": audio_hid,
             "sync": synced,
+            "video_codecs": self._video_codecs(video_text, video_base, video_url),
         }
         if bridge_used:
             result["sync_bridge"] = "eng"
