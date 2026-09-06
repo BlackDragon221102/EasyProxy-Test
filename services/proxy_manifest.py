@@ -843,18 +843,6 @@ class HLSProxyManifestHandlerMixin:
                         request_log_context(request, target_url, extractor=extractor),
                     )
                     return web.Response(text="Re-extraction failed", status=502)
-                finally:
-                    _ek2 = self._extractor_key_for_instance(extractor2) if extractor2 else None
-                    if _ek2 and _ek2 in self.extractors:
-                        self.extractors.pop(_ek2, None)
-                        self._extractor_atimes.pop(_ek2, None)
-                        for _sr in [r for r in self._extractor_stream_atimes if r[0] == _ek2]:
-                            self._extractor_stream_atimes.pop(_sr, None)
-                    if extractor2 and hasattr(extractor2, "close"):
-                        try:
-                            await extractor2.close()
-                        except Exception:
-                            pass
 
         except Exception as e:
             error_msg = str(e).lower()
