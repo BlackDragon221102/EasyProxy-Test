@@ -204,6 +204,15 @@ class HLSProxyDualMixin:
         return value
 
     @staticmethod
+    def _stable_spec_id(spec: Any) -> str:
+        """ID stabile per la cache: pagina + extractor, mai URL estratti (token)."""
+        if isinstance(spec, dict):
+            extractor = str(spec.get("extractor") or spec.get("host") or "").strip().lower()
+            url = str(spec.get("d") or spec.get("url") or "").strip()
+            return f"{extractor}|{url}"
+        return str(spec or "").strip()
+
+    @staticmethod
     def _routing(spec: dict) -> tuple[bool, bool, str | None]:
         raw_proxy = str(spec.get("proxy") or spec.get("proxy_url") or "").strip()
         proxy_off = raw_proxy.lower() == "off" or bool(spec.get("proxy_off"))
@@ -461,11 +470,6 @@ class HLSProxyDualMixin:
         return ""
 
     @staticmethod
-    def _fingerprint(url: str, headers: dict) -> str:
-        selected = "|".join(f"{key}:{headers[key]}" for key in sorted(headers))
-        return hashlib.sha1(f"{url}|{selected}".encode()).hexdigest()[:20]
-
-    @staticmethod
     def _cached_sync_result(
         lookup: dict | None,
         cache_key: str,
@@ -691,10 +695,12 @@ class HLSProxyDualMixin:
 
         media_key = str(body.get("media_key") or body.get("mediaKey") or "").strip()
         if not media_key:
-            media_key = hashlib.sha1(str(body.get("video_url") or video["url"]).encode()).hexdigest()[:24]
+            media_key = hashlib.sha1(self._stable_spec_id(video_spec).encode()).hexdigest()[:24]
         video_fingerprint = str(body.get("video_fingerprint") or "").strip()
         if not video_fingerprint:
-            video_fingerprint = self._fingerprint(video_url, video.get("headers") or {})
+            video_fingerprint = hashlib.sha1(
+                f"video|{self._stable_spec_id(video_spec)}".encode()
+            ).hexdigest()[:20]
 
         audio_segments, _, _ = dual_service.audio._parse_playlist(
             audio_playlist, audio_playlist_base
