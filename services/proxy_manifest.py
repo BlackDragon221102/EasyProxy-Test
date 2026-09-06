@@ -341,6 +341,22 @@ class HLSProxyManifestHandlerMixin:
                         if mpd_session and not mpd_session.closed:
                             await mpd_session.close()
 
+                if "indexRange" in captured_manifest:
+                    try:
+                        from utils.dash_ranges import expand_segment_bases, fetch_range
+                        async def _fetch_sidx(url, range_str):
+                            session, _ = await self._get_proxy_session(
+                                url, bypass_warp=bypass_warp, forced_proxy=selected_proxy
+                            )
+                            try:
+                                return await fetch_range(session, url, stream_headers, range_str)
+                            finally:
+                                if session and not session.closed:
+                                    await session.close()
+                        captured_manifest = await expand_segment_bases(captured_manifest, stream_url, _fetch_sidx)
+                    except Exception as e:
+                        logger.warning(f"Failed to expand DASH SegmentBase indexes: {e}")
+
                 rewritten_mpd = ManifestRewriter.rewrite_mpd_native(
                     manifest_content=captured_manifest,
                     mpd_url=stream_url,
