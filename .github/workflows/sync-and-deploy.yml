@@ -49,9 +49,12 @@ jobs:
             echo "updated=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Trigger Render Deploy with Clear Cache
+      - name: Trigger Render Deploy with Clear Cache (Principale e Backup)
         # Esegue questo step SOLO se sono stati scaricati e pushati nuovi aggiornamenti
         if: steps.sync.outputs.updated == 'true'
         run: |
-          # Aggiunge il parametro &clearCache=true all'URL del Webhook salvato nei secret
+          echo "Avvio deploy su Render Principale..."
           curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}&clearCache=true"
+          
+          echo "Avvio deploy su Render Backup..."
+          curl -X POST "${{ secrets.RENDER_BACKUP_DEPLOY_HOOK }}&clearCache=true"
