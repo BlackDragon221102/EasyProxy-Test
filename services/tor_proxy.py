@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import time
 
 import aiohttp
@@ -79,8 +80,52 @@ def _split_bind(bind: str) -> tuple[str, int]:
     return host, int(match.group("port"))
 
 
-def _write_torrc() -> None:
+def _tor_identity() -> tuple[int | None, int | None]:
+    """Return the Debian Tor uid/gid when the app can prepare them."""
+    if os.name == "nt" or getattr(os, "geteuid", lambda: 1)() != 0:
+        return None, None
+    try:
+        import pwd
+        account = pwd.getpwnam("debian-tor")
+    except (ImportError, KeyError):
+        return None, None
+    # Use the account's primary gid; the group name is not guaranteed to
+    # match the username on every VPS image.
+    return account.pw_uid, account.pw_gid
+
+
+def _repair_tor_data_permissions(tor_uid: int, tor_gid: int) -> None:
+    """Make the bind-mounted Tor state readable/writable by debian-tor."""
+    parent_dir = os.path.dirname(os.path.abspath(TOR_DATA_DIR))
+    parent_mode = stat.S_IMODE(os.stat(parent_dir).st_mode)
+    # Tor only needs to traverse the /data mount; keep its contents private.
+    os.chmod(parent_dir, parent_mode | stat.S_IXOTH)
     os.makedirs(TOR_DATA_DIR, exist_ok=True)
+    os.chown(TOR_DATA_DIR, tor_uid, tor_gid)
+    os.chmod(TOR_DATA_DIR, 0o700)
+    for root, dirs, files in os.walk(TOR_DATA_DIR):
+        for name in dirs:
+            path = os.path.join(root, name)
+            os.chown(path, tor_uid, tor_gid)
+            os.chmod(path, 0o700)
+        for name in files:
+            path = os.path.join(root, name)
+            os.chown(path, tor_uid, tor_gid)
+            os.chmod(path, 0o600)
+
+
+def _write_torrc() -> None:
+    tor_uid, tor_gid = _tor_identity()
+    run_as_debian_tor = tor_uid is not None and tor_gid is not None
+    if run_as_debian_tor:
+        try:
+            _repair_tor_data_permissions(tor_uid, tor_gid)
+        except OSError as exc:
+            raise TorError(
+                f"Cannot set permissions on {TOR_DATA_DIR} for debian-tor: {exc}"
+            ) from exc
+    else:
+        os.makedirs(TOR_DATA_DIR, exist_ok=True)
     host, port = _split_bind(get_bind())
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
@@ -96,37 +141,16 @@ def _write_torrc() -> None:
         f"Log notice file {TOR_LOG_PATH}",
     ]
     # Debian's package user prevents Tor from running as root in Docker.
-    tor_uid = tor_gid = None
-    if os.name != "nt" and os.geteuid() == 0:
-        try:
-            import pwd
-            pwd.getpwnam("debian-tor")
-        except (ImportError, KeyError):
-            pass
-        else:
-            import grp
-            try:
-                tor_uid = pwd.getpwnam("debian-tor").pw_uid
-                tor_gid = grp.getgrnam("debian-tor").gr_gid
-                os.chown(TOR_DATA_DIR, tor_uid, tor_gid)
-            except (OSError, KeyError):
-                pass
-            lines.append("User debian-tor")
+    if run_as_debian_tor:
+        lines.append("User debian-tor")
     with open(TORRC_PATH, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     try:
-        os.chmod(TORRC_PATH, 0o644)
-    except OSError:
-        pass
-    if tor_uid is not None and tor_gid is not None:
-        # A bind-mounted /data/tor can contain files created by a previous
-        # root process. Tor must be able to update its state, cookie and log.
-        for root, dirs, files in os.walk(TOR_DATA_DIR):
-            for name in (*dirs, *files):
-                try:
-                    os.chown(os.path.join(root, name), tor_uid, tor_gid)
-                except OSError:
-                    pass
+        if run_as_debian_tor:
+            os.chown(TORRC_PATH, tor_uid, tor_gid)
+        os.chmod(TORRC_PATH, 0o600)
+    except OSError as exc:
+        raise TorError(f"Cannot set permissions on {TORRC_PATH}: {exc}") from exc
 
 
 async def _port_ready(host: str, port: int) -> bool:
@@ -149,6 +173,37 @@ async def _control_command(reader, writer, command: str) -> None:
         if line.startswith("4") or line.startswith("5"):
             raise TorError(line)
     raise TorError("Unexpected Tor control response")
+
+
+async def _bootstrap_progress() -> int | None:
+    """Return Tor's bootstrap percentage, or None while the control port is not ready."""
+    cookie_path = os.path.join(TOR_DATA_DIR, "control_auth_cookie")
+    try:
+        with open(cookie_path, "rb") as handle:
+            cookie = handle.read()
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(TOR_CONTROL_HOST, TOR_CONTROL_PORT), timeout=5
+        )
+    except (OSError, asyncio.TimeoutError):
+        return None
+    try:
+        await _control_command(reader, writer, f"AUTHENTICATE {cookie.hex()}")
+        writer.write(b"GETINFO status/bootstrap-phase\r\n")
+        await writer.drain()
+        for _ in range(64):
+            line = (await asyncio.wait_for(reader.readline(), timeout=5)).decode("utf-8", "replace")
+            match = re.search(r"PROGRESS=(\d+)", line)
+            if match:
+                return int(match.group(1))
+        return None
+    except (OSError, asyncio.TimeoutError, TorError):
+        return None
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
 
 
 def _log_tail(lines: int = 24) -> str:
@@ -262,12 +317,12 @@ async def start() -> None:
                     raise TorError(
                         f"Tor exited during startup (code {process.returncode}): {detail or 'no Tor output'}"
                     )
-                if await _port_ready(host, port):
-                    logger.info("Tor SOCKS5 ready on %s:%s", host, port)
+                if await _port_ready(host, port) and await _bootstrap_progress() == 100:
+                    logger.info("Tor SOCKS5 ready and bootstrapped on %s:%s", host, port)
                     ready = True
                     return
                 await asyncio.sleep(1)
-            raise TorError(f"Tor did not open its SOCKS5 port in time: {_log_tail()}")
+            raise TorError(f"Tor did not bootstrap in time: {_log_tail()}")
         finally:
             if not ready:
                 if _process is process:
