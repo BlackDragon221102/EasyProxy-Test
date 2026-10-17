@@ -388,8 +388,10 @@ class HLSProxyDualMixin:
                 return await response.text(), final_url
         except DualLinksError:
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            raise DualLinksError(502, f"source fetch failed: {type(exc).__name__}") from exc
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            # OSError also covers python_socks failures (dead WARP/Tor SOCKS).
+            logger.warning("[DUAL] source fetch failed: %s (%s)", url, exc)
+            raise DualLinksError(502, f"source fetch failed: {type(exc).__name__}: {exc}") from exc
         finally:
             BYPASS_WARP_CONTEXT.reset(bypass_token)
             BYPASS_PROXIES_CONTEXT.reset(proxy_bypass_token)
@@ -560,6 +562,7 @@ class HLSProxyDualMixin:
         token: str,
         media_key: str,
         language: str,
+        pinned_hids: list[str] | None = None,
     ) -> dict:
         key_uri = self._audio_key(playlist)
         key_bytes = b""
@@ -593,6 +596,8 @@ class HLSProxyDualMixin:
         hid = str(prepared.get("hid") or "")
         if hid:
             dual_service.audio.pin(hid)
+            if pinned_hids is not None:
+                pinned_hids.append(hid)
         return prepared
 
     async def _register_dual_subtitle(
@@ -932,11 +937,7 @@ class HLSProxyDualMixin:
         pinned_hids: list[str] = []
 
         async def _prepare_and_track(*args) -> dict:
-            prepared = await self._prepare_dual_audio(*args)
-            hid = str(prepared.get("hid") or "")
-            if hid:
-                pinned_hids.append(hid)
-            return prepared
+            return await self._prepare_dual_audio(*args, pinned_hids=pinned_hids)
 
         prepared_task = asyncio.create_task(
             _prepare_and_track(
@@ -1045,6 +1046,9 @@ class HLSProxyDualMixin:
             _unpin_all()
         status = str(synced.get("status") or "")
         if status != "ok":
+            for t in subtitle_tasks:
+                t.cancel()
+            await asyncio.gather(*subtitle_tasks, return_exceptions=True)
             detail = synced.get("message") or synced.get("detail") or "DUAL sync failed"
             raise DualLinksError(409, str(detail))
         subtitle_items = [
