@@ -1691,6 +1691,9 @@ class HLSProxyStreamingMixin:
                     }
                     for h in ["Content-Length", "Content-Range", "Accept-Ranges"]:
                         if h in resp.headers: response_headers[h] = resp.headers[h]
+                    # See the buffered path: keep segments uncompressed end to end.
+                    response_headers["Cache-Control"] = "no-transform"
+                    response_headers["Content-Encoding"] = "identity"
 
                     response = web.StreamResponse(status=resp.status, headers=response_headers)
                     await response.prepare(request)
@@ -2033,6 +2036,12 @@ class HLSProxyStreamingMixin:
                 set_response_header(
                     response_headers, "Content-Length", str(len(content_bytes))
                 )
+                # The reverse proxy (Traefik gzip) compresses full responses and
+                # Cloudflare caches that copy, then answers Range requests with
+                # the compressed size in Content-Range, truncating init segments.
+                # Traefik skips responses that already declare an encoding.
+                set_response_header(response_headers, "Cache-Control", "no-transform")
+                set_response_header(response_headers, "Content-Encoding", "identity")
 
                 if coalesce_future is not None and response_status == 200:
                     coalesce_future.set_result(
